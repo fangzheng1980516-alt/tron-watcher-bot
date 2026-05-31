@@ -7,10 +7,10 @@ from threading import Thread
 from flask import Flask
 
 # ========== 配置 ==========
-BOT_TOKEN = "8956870921:AAFBvYNS4ier8jo0vMGBvDozA3i1H29DeLQ"
+BOT_TOKEN = "8956870921:AAFBvYNS4ier8joOvMGByDozA3iiH29DeLQ"
 # =========================
 
-# ========== Flask Web 服务器（Render 健康检查用）==========
+# ========== Flask Web 服务器 ==========
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -25,11 +25,12 @@ def run_web():
 def start_web():
     web_thread = Thread(target=run_web, daemon=True)
     web_thread.start()
-# ===========================================================
+# ======================================
 
 USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 DATA_FILE = "processed_txs.json"
 WALLETS_FILE = "wallets.json"
+OFFSET_FILE = "last_offset.txt"
 
 def load_processed_txs():
     if os.path.exists(DATA_FILE):
@@ -55,9 +56,22 @@ def save_wallets(wallets):
     with open(WALLETS_FILE, 'w') as f:
         json.dump(wallets, f, indent=2)
 
+def load_last_offset():
+    if os.path.exists(OFFSET_FILE):
+        with open(OFFSET_FILE, 'r') as f:
+            try:
+                return int(f.read().strip())
+            except:
+                return 0
+    return 0
+
+def save_last_offset(offset):
+    with open(OFFSET_FILE, 'w') as f:
+        f.write(str(offset))
+
 chat_wallets = load_wallets()
 processed_txs = load_processed_txs()
-last_update_id = 0
+last_update_id = load_last_offset()
 
 def send_telegram(chat_id, text, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -65,10 +79,12 @@ def send_telegram(chat_id, text, reply_markup=None):
     if reply_markup:
         data["reply_markup"] = json.dumps(reply_markup)
     try:
-        requests.post(url, json=data, timeout=5)
-        print(f"已发送消息到 {chat_id}")
+        r = requests.post(url, json=data, timeout=10)
+        print(f"已发送消息到 {chat_id}, 响应: {r.status_code}")
+        return True
     except Exception as e:
         print(f"发送失败: {e}")
+        return False
 
 def send_main_menu(chat_id, is_group=False):
     keyboard = {
@@ -86,23 +102,25 @@ def send_main_menu(chat_id, is_group=False):
 def get_usdt_balance(address):
     try:
         url = f"https://api.trongrid.io/v1/accounts/{address}"
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, timeout=15)
         data = resp.json()
         for trc20 in data.get('data', [{}])[0].get('trc20', []):
             for contract, bal in trc20.items():
                 if contract == USDT_CONTRACT:
                     return int(bal) / 1_000_000
         return 0
-    except:
+    except Exception as e:
+        print(f"查询余额错误 {address}: {e}")
         return 0
 
-def get_recent_transactions(address):
+def get_recent_transactions(address, limit=30):
     try:
         url = f"https://api.trongrid.io/v1/accounts/{address}/transactions/trc20"
-        params = {"contract_address": USDT_CONTRACT, "limit": 30, "only_confirmed": True}
-        resp = requests.get(url, params=params, timeout=10)
+        params = {"contract_address": USDT_CONTRACT, "limit": limit, "only_confirmed": True}
+        resp = requests.get(url, params=params, timeout=15)
         return resp.json().get('data', [])
-    except:
+    except Exception as e:
+        print(f"查询交易错误 {address}: {e}")
         return []
 
 def check_all_wallets():
@@ -113,27 +131,24 @@ def check_all_wallets():
         if not isinstance(addresses, list):
             continue
         for addr in addresses:
-            txs = get_recent_transactions(addr)
+            txs = get_recent_transactions(addr, 20)
             for tx in txs:
                 tx_id = tx.get('transaction_id')
                 if tx_id and tx_id not in processed_txs:
                     processed_txs.add(tx_id)
                     
+                    # 只处理收入
                     if tx.get('to') != addr:
                         continue
                     
                     amount = int(tx.get('value', 0)) / 1_000_000
                     timestamp = tx.get('block_timestamp', 0) / 1000
                     dt = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
-                    
                     addr_short = addr[:6] + "..." + addr[-4:]
                     msg = f"📥 **收到 USDT**\n地址: `{addr_short}`\n金额: **{amount}** USDT\n时间: {dt}"
                     
-                    try:
-                        send_telegram(int(chat_id_str), msg)
-                        print(f"[{datetime.now()}] 收到 {amount} USDT -> {addr_short}")
-                    except:
-                        send_telegram(chat_id_str, msg)
+                    send_telegram(int(chat_id_str), msg)
+                    print(f"[{datetime.now()}] 收到 {amount} USDT -> {addr_short}")
     
     save_processed_txs(processed_txs)
 
@@ -150,29 +165,37 @@ def monitoring_loop():
 def handle_updates():
     global last_update_id, chat_wallets
     
+    print("📨 消息处理线程已启动")
+    
     while True:
         try:
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-            params = {"offset": last_update_id + 1, "timeout": 20}
-            resp = requests.get(url, params=params, timeout=25)
+            params = {"offset": last_update_id + 1, "timeout": 30}
+            resp = requests.get(url, params=params, timeout=35)
             result = resp.json()
             
             if not result.get('ok'):
+                print(f"API 错误: {result}")
                 time.sleep(5)
                 continue
             
             updates = result.get('result', [])
             
             for update in updates:
-                last_update_id = update.get('update_id', last_update_id)
+                update_id = update.get('update_id')
+                if update_id:
+                    last_update_id = update_id
+                    save_last_offset(last_update_id)
                 
+                # 获取聊天信息
                 chat_id = None
                 chat_type = None
                 
                 if 'callback_query' in update:
-                    msg = update['callback_query']['message']
-                    chat_id = msg['chat']['id']
-                    chat_type = msg['chat']['type']
+                    msg = update['callback_query'].get('message')
+                    if msg:
+                        chat_id = msg['chat']['id']
+                        chat_type = msg['chat']['type']
                 elif 'message' in update:
                     msg = update['message']
                     chat_id = msg['chat']['id']
@@ -186,12 +209,15 @@ def handle_updates():
                 
                 if chat_id_key not in chat_wallets:
                     chat_wallets[chat_id_key] = []
+                    save_wallets(chat_wallets)
                 
+                # 处理按钮点击
                 if 'callback_query' in update:
                     callback = update['callback_query']
                     data = callback.get('data', '')
                     callback_id = callback.get('id', '')
                     
+                    # 回应按钮点击
                     try:
                         requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery", 
                                       json={"callback_query_id": callback_id}, timeout=5)
@@ -244,7 +270,7 @@ def handle_updates():
                         total_in = 0
                         total_out = 0
                         for addr in wallets:
-                            for tx in get_recent_transactions(addr):
+                            for tx in get_recent_transactions(addr, 50):
                                 ts = tx.get('block_timestamp', 0) / 1000
                                 if ts >= today_start:
                                     amt = int(tx.get('value', 0)) / 1_000_000
@@ -263,13 +289,15 @@ def handle_updates():
                                 chat_wallets[chat_id_key] = wallets
                                 save_wallets(chat_wallets)
                                 send_telegram(chat_id, f"✅ 已移除: `{removed[:6]}...{removed[-4:]}`")
-                        except:
+                        except Exception as e:
+                            print(f"移除错误: {e}")
                             send_telegram(chat_id, "❌ 移除失败")
                         send_main_menu(chat_id, is_group)
                     
                     elif data == "back":
                         send_main_menu(chat_id, is_group)
                 
+                # 处理文字消息
                 elif 'message' in update:
                     msg = update['message']
                     text = msg.get('text', '')
@@ -291,10 +319,10 @@ def handle_updates():
             
         except Exception as e:
             print(f"消息处理错误: {e}")
-            time.sleep(3)
+            time.sleep(5)
 
 if __name__ == "__main__":
-    # 清理损坏的钱包数据
+    # 清理损坏的数据
     if os.path.exists(WALLETS_FILE):
         try:
             test = load_wallets()
@@ -305,18 +333,17 @@ if __name__ == "__main__":
             os.remove(WALLETS_FILE)
             chat_wallets = {}
     
-    # 启动 Web 服务器（Render 健康检查用）
-    start_web()
-    
     print(f"🤖 TRC20 监控机器人启动...")
     print(f"📊 监控群组数量: {len(chat_wallets)}")
     print(f"📝 支持命令: /start  /Query  /查询")
     print(f"🔔 只监控 USDT 入账，转出不通知")
-    print(f"🌐 Web 服务器已启动，端口: {os.environ.get('PORT', 8080)}")
+    print(f"📨 消息偏移量: {last_update_id}")
+    
+    # 启动 Web 服务器
+    start_web()
     
     # 启动监控线程
-    monitor_thread = Thread(target=monitoring_loop, daemon=True)
-    monitor_thread.start()
+    Thread(target=monitoring_loop, daemon=True).start()
     
-    # 启动消息处理（主线程）
+    # 启动消息处理
     handle_updates()
