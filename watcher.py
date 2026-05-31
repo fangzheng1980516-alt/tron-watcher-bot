@@ -304,14 +304,15 @@ def handle_updates():
                     
                     if text in ['/start', '/Query', '/查询']:
                         send_main_menu(chat_id, is_group)
-                    elif text and len(text) == 34 and text.startswith('T') and not is_group:
+                    # 修改：允许群组中添加地址（去掉了 and not is_group）
+                    elif text and len(text) == 34 and text.startswith('T'):
                         wallets = chat_wallets[chat_id_key]
                         if text not in wallets:
                             wallets.append(text)
                             chat_wallets[chat_id_key] = wallets
                             save_wallets(chat_wallets)
                             send_telegram(chat_id, f"✅ 已添加钱包\n`{text[:6]}...{text[-4:]}`")
-                            send_main_menu(chat_id, False)
+                            send_main_menu(chat_id, is_group)
                         else:
                             send_telegram(chat_id, "⚠️ 该钱包已在监控列表中")
                     elif text and not text.startswith('/') and not is_group:
