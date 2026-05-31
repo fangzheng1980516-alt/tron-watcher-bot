@@ -4,10 +4,28 @@ import json
 import os
 from datetime import datetime
 from threading import Thread
+from flask import Flask
 
 # ========== 配置 ==========
-BOT_TOKEN = "8956870921:AAFBvYNS4ier8joOvMGByDozA3iiH29DeLQ"
+BOT_TOKEN = "8956870921:AAFBvYNS4ier8jo0vMGBvDozA3i1H29DeLQ"
 # =========================
+
+# ========== Flask Web 服务器（Render 健康检查用）==========
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+@flask_app.route('/health')
+def health():
+    return "OK", 200
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    flask_app.run(host="0.0.0.0", port=port)
+
+def start_web():
+    web_thread = Thread(target=run_web, daemon=True)
+    web_thread.start()
+# ===========================================================
 
 USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 DATA_FILE = "processed_txs.json"
@@ -276,6 +294,7 @@ def handle_updates():
             time.sleep(3)
 
 if __name__ == "__main__":
+    # 清理损坏的钱包数据
     if os.path.exists(WALLETS_FILE):
         try:
             test = load_wallets()
@@ -286,10 +305,18 @@ if __name__ == "__main__":
             os.remove(WALLETS_FILE)
             chat_wallets = {}
     
+    # 启动 Web 服务器（Render 健康检查用）
+    start_web()
+    
     print(f"🤖 TRC20 监控机器人启动...")
     print(f"📊 监控群组数量: {len(chat_wallets)}")
     print(f"📝 支持命令: /start  /Query  /查询")
     print(f"🔔 只监控 USDT 入账，转出不通知")
+    print(f"🌐 Web 服务器已启动，端口: {os.environ.get('PORT', 8080)}")
     
-    Thread(target=monitoring_loop, daemon=True).start()
+    # 启动监控线程
+    monitor_thread = Thread(target=monitoring_loop, daemon=True)
+    monitor_thread.start()
+    
+    # 启动消息处理（主线程）
     handle_updates()
